@@ -44,14 +44,15 @@ This single file contains the full analysis pipeline, in the order in which it i
            Thesis: Figures 4, 5, E2; Tables E1, E2, E8, E10 (row G)
   Part 18 R figures: Figure E3 with Table E9 (Model 3), Figure E1
 
-  A correction is applied after Part 1 (see apply_reflection_score_correction).
+  Documented data corrections are applied after Part 1 (see apply_documented_corrections).
 
 Usage
 -----
   Place this file in the project folder that contains the source workbook
   (WorkAI_מאגר_מתכלל_מלא_נבדקים_והצלבות_original_backup.xlsx), the coded
   logs (WorkAI_קידוד_מלא_לוגים_ENA_ONA.xlsx, ena_dataset_workai_english.csv,
-  ena_ona_dataset_coded_english.csv) and the platform database (Db_278.db), then run:
+  ena_ona_dataset_coded_english.csv), the platform database (Db_278.db) and the
+  private configuration file (private_participant_config.json), then run:
 
       python3 WorkAI_analysis_code.py
 
@@ -60,16 +61,27 @@ Usage
 
 Requirements
 ------------
-  Python 3.10+: pandas, numpy, scipy, statsmodels, pingouin, scikit-learn, openpyxl, matplotlib
-  R 4.3+: rENA, ggplot2, ggrepel, dplyr, grid, gridExtra, cluster, ordinal
+  Python 3.10+: pandas, numpy, scipy, statsmodels, openpyxl, matplotlib, networkx
+  R 4.3+: rENA, ggplot2, ggrepel, patchwork, scales
 
-The participant data are not included in this repository.
+The participant data and the private configuration file are not included in this
+repository. They are available upon submission of a request form and approval by
+the ethics committee of the requesting institution.
 """
 
 import os
 PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
 SCRIPTS_DIR = os.path.join(PROJECT_DIR, 'analysis_scripts')
 os.makedirs(SCRIPTS_DIR, exist_ok=True)
+
+# Participant identifiers, documented data corrections and the record of the
+# questionnaire-only respondent are kept in a private file that is not part of
+# the repository (it accompanies the confidential data).
+import json
+with open(os.path.join(PROJECT_DIR, 'private_participant_config.json'), encoding='utf-8') as _fh:
+    CONFIG = json.load(_fh)
+Q_ONLY_ID = CONFIG['questionnaire_only_participant']
+ANOMALOUS_ID = CONFIG['anomalous_message_volume']
 
 
 #==============================================================================
@@ -247,7 +259,7 @@ analysis_scripts/00_prepare_master_table.py
 ============================================
 הכנת גיליון 0: הטבלה המרכזת הנקייה (N=70).
 1. טוען את קובץ ה-SSOT (כל_הנתונים_לפי_משתמש_N69).
-2. מצרף את המשתתפת ה-70 (user_525vg81ny) עם נתוני שאלון מלאים.
+2. מצרף את המשיבה לשאלון שאין לה רשומת משימה.
 3. יוצר עמודות דגל: השלימה_משימה, מילאה_שאלון, הוצגו_מקורות, הוצאה_מקידוד_צאט, דגל_חריג, דגל_מעורבות_נמוכה.
 4. מחשב עמודות חדשות: ציון_4_ממדים, ציון_4_ממדים_ללא_ש3, Kember_ללא_ש3, תחקיר_ללא_ש3, אפס_כניסות.
 5. מסיר עמודות מיותרות/כפולות מעותק העבודה.
@@ -266,27 +278,24 @@ def main():
     df = pd.read_excel(INPUT_EXCEL, sheet_name='כל_הנתונים_לפי_משתמש_N69', header=3)
     print(f"נטענו {len(df)} נבדקות מקוריות.")
 
-    # 1. הוספת משתתפת 70: user_525vg81ny
+    # 1. Questionnaire-only respondent (no task record), added from the private file
     user_70_row = {col: np.nan for col in df.columns}
-    # This respondent's questionnaire was missing from the source workbook; it is added
-    # from the questionnaire export (data file, not included in the repository).
-    with open(os.path.join(BASE_DIR, 'participant_70_questionnaire.json'), encoding='utf-8') as fh:
-        user_70_row.update(json.load(fh))
+    user_70_row.update(CONFIG['questionnaire_only_record'])
 
     df = pd.concat([df, pd.DataFrame([user_70_row])], ignore_index=True)
-    print(f"סה\"כ נבדקות לאחר הוספת המשתתפת ה-70: {len(df)}")
+    print(f"סה\"כ נבדקות לאחר הוספת המשיבה לשאלון: {len(df)}")
 
     # 2. עמודות דגל
-    df['השלימה_משימה'] = (df['מזהה_משתמש'] != 'user_525vg81ny').astype(int)
+    df['השלימה_משימה'] = (df['מזהה_משתמש'] != Q_ONLY_ID).astype(int)
     df['מילאה_שאלון'] = (df['מילא_שאלון_משוב'] == 'כן').astype(int)
     
-    # הוצגו מקורות: 0 לשני נבדקי צ'אטבוט ולמשתתפת 70 שלא ביצעה משימה
+    # הוצגו מקורות: 0 למשתתפים שלא הוצגו להם מקורות
     df['הוצגו_מקורות'] = 1
-    no_src_uids = ['e03d82e7-a44c-4ce6-8215-abd0b7db18a3', 'user_d222kcmnr', 'user_525vg81ny']
+    no_src_uids = CONFIG['no_sources_presented']
     df.loc[df['מזהה_משתמש'].isin(no_src_uids), 'הוצגו_מקורות'] = 0
 
-    # הוצאה מקידוד צ'אט: המשתתפת בעלת 80 ההודעות (user_isvijah1u)
-    df['הוצאה_מקידוד_צאט'] = (df['מזהה_משתמש'] == 'user_isvijah1u').astype(int)
+    # הוצאה מקידוד צ'אט: המשתתפת עם נפח ההודעות החריג
+    df['הוצאה_מקידוד_צאט'] = (df['מזהה_משתמש'] == ANOMALOUS_ID).astype(int)
 
     # דגל מעורבות נמוכה: משך ביצוע נטו קטן מ-2 דקות
     df['דגל_מעורבות_נמוכה'] = 0
@@ -385,27 +394,25 @@ if __name__ == '__main__':
 
 
 # ------------------------------------------------------------------------------
-# Correction applied after the master table is built (Appendix C, Table C5):
-# the reflection dimension score must follow the Kember level. One Chatbot
-# participant (user_8ak40wpi2) was coded at level 0 ("no reflection") but the
-# platform had stored a reflection score of 60. The score is set to 0 and the
-# composite score is recomputed with the official weights (15/35/30/10 of 90).
+# Documented data corrections (Appendix B, Table B4) are applied from the private
+# file; the composite score is then recomputed with the official weights.
 # ------------------------------------------------------------------------------
-def apply_reflection_score_correction():
+def apply_documented_corrections():
     path = os.path.join(SCRIPTS_DIR, 'master_clean_n70.csv')
     m = pd.read_csv(path)
-    idx = m['מזהה_משתמש'] == 'user_8ak40wpi2'
-    assert idx.sum() == 1
-    m.loc[idx, 'ציון_ממד_תחקיר'] = 0.0
-    m.loc[idx, 'ציון_רפלקציה_ללא_שאלה_3'] = 0.0
-    comp = (15.0 * m['ציון_ממד_פרומפט'] + 35.0 * m['ציון_ממד_זיהוי_מקורות']
-            + 30.0 * m['ציון_ממד_תהליך_ובדיקה'] + 10.0 * m['ציון_ממד_תחקיר']) / 90.0
-    m.loc[idx, 'ציון_4_ממדים'] = comp[idx]
-    m.loc[idx, 'ציון_מנורמל_ללא_שיפור'] = comp[idx].round(2)
+    for corr in CONFIG['score_corrections']:
+        idx = m['מזהה_משתמש'] == corr['participant']
+        assert idx.sum() == 1
+        for col in corr['set_to_zero']:
+            m.loc[idx, col] = 0.0
+        comp = (15.0 * m['ציון_ממד_פרומפט'] + 35.0 * m['ציון_ממד_זיהוי_מקורות']
+                + 30.0 * m['ציון_ממד_תהליך_ובדיקה'] + 10.0 * m['ציון_ממד_תחקיר']) / 90.0
+        m.loc[idx, 'ציון_4_ממדים'] = comp[idx]
+        m.loc[idx, 'ציון_מנורמל_ללא_שיפור'] = comp[idx].round(2)
     m.to_csv(path, index=False, encoding='utf-8-sig')
-    print('Reflection score correction applied to user_8ak40wpi2')
+    print('Documented corrections applied:', len(CONFIG['score_corrections']))
 
-apply_reflection_score_correction()
+apply_documented_corrections()
 
 
 #==============================================================================
@@ -468,8 +475,8 @@ def main():
     search_cols = ['External search']
     class_cols = ['Classification - reliable', 'Classification - unreliable', 'Classification revision']
 
-    # החרגת המשתתפת החריגה user_isvijah1u (כמו ב-ENA)
-    df_clean = df_raw[df_raw['user_id'] != 'user_isvijah1u'].copy()
+    # החרגת המשתתפת עם נפח ההודעות החריג (כמו ב-ENA)
+    df_clean = df_raw[df_raw['user_id'] != ANOMALOUS_ID].copy()
 
     STATES = ['פרומפט', 'התייעצות', 'כניסה למקור', 'חיפוש חיצוני', 'סיווג']
     state_to_idx = {s: i for i, s in enumerate(STATES)}
@@ -1236,48 +1243,7 @@ def main():
     # ==========================================
     # א. יומן ניקיון ובדיקות עקביות
     # ==========================================
-    cleaning_log = [
-        {
-            'מזהה_משתמש': 'user_9vd6j3xdw',
-            'משתנה': 'ציון_ממד_תהליך_ובדיקה',
-            'ערך_מקורי': 140,
-            'ערך_חדש': 100,
-            'סיבה': 'הגבלה לתקרת ציון מקסימלית (100) בשל חישוב בונוס לא מוגבל בצ\'אטבוט',
-            'תאריך': '2026-09-15'
-        },
-        {
-            'מזהה_משתמש': 'user_iw02awx51',
-            'משתנה': 'ציון_ממד_תהליך_ובדיקה',
-            'ערך_מקורי': 110,
-            'ערך_חדש': 100,
-            'סיבה': 'הגבלה לתקרת ציון מקסימלית (100) בשל חישוב בונוס לא מוגבל בצ\'אטבוט',
-            'תאריך': '2026-09-15'
-        },
-        {
-            'מזהה_משתמש': 'user_6mo3gwzpe',
-            'משתנה': 'ציון_4_ממדים',
-            'ערך_מקורי': 18.0,
-            'ערך_חדש': 21.11,
-            'סיבה': 'חישוב מחדש של הציון המשוקלל לפי 4 הממדים הרשמיים',
-            'תאריך': '2026-09-15'
-        },
-        {
-            'מזהה_משתמש': 'user_8ak40wpi2',
-            'משתנה': 'ציון_4_ממדים',
-            'ערך_מקורי': 37.0,
-            'ערך_חדש': 32.22,
-            'סיבה': 'חישוב מחדש של הציון המשוקלל לפי 4 הממדים הרשמיים',
-            'תאריך': '2026-09-15'
-        },
-        {
-            'מזהה_משתמש': '7 משתתפים (3 סימולציה, 4 צ\'אטבוט)',
-            'משתנה': 'משך_פעילות_נטו_מנוקה_דקות',
-            'ערך_מקורי': '> 60 דקות (עד 135+ דק\')',
-            'ערך_חדש': 60.0,
-            'סיבה': 'הגבלה מתודולוגית של משך הביצוע המקסימלי לתקרה של שעה אחת',
-            'תאריך': '2026-09-15'
-        }
-    ]
+    cleaning_log = CONFIG['cleaning_log']   # documented corrections (private file)
     df_clean_log = pd.DataFrame(cleaning_log)
     df_clean_log.to_csv(os.path.join(OUTPUT_DIR, 'tab_2a_cleaning_log.csv'), index=False, encoding='utf-8-sig')
 
@@ -1338,16 +1304,8 @@ def main():
     df_outliers.to_csv(os.path.join(OUTPUT_DIR, 'tab_2b_outliers_summary.csv'), index=False, encoding='utf-8-sig')
 
     # ==========================================
-    # ג. תיאור המדגם ומשפך השתתפות (N=182)
+    # ג. משפך ההשתתפות מחושב מהלוגים בחלק 13 (tab_2c_funnel.csv)
     # ==========================================
-    funnel_data = [
-        {'שלב': '1. כניסה והרשמה למערכת (Registered)', 'סימולציה_n': 88, 'צ\'אטבוט_n': 94, 'סה"כ_n': 182, 'אחוז_סימולציה': '100.0%', 'אחוז_צ\'אטבוט': '100.0%'},
-        {'שלב': '2. התחלת תרגול ומשימה בפועל (Started Practice)', 'סימולציה_n': 48, 'צ\'אטבוט_n': 73, 'סה"כ_n': 121, 'אחוז_סימולציה': '54.5%', 'אחוז_צ\'אטבוט': '77.7%'},
-        {'שלב': '3. השלמת משימה מלאה והגשת דוח (Completed Task)', 'סימולציה_n': 30, 'צ\'אטבוט_n': 39, 'סה"כ_n': 69, 'אחוז_סימולציה': '62.5%', 'אחוז_צ\'אטבוט': '53.4%'},
-        {'שלב': '4. מילוי שאלון משוב מסונכרן (Completed Survey)', 'סימולציה_n': 21, 'צ\'אטבוט_n': 28, 'סה"כ_n': 49, 'אחוז_סימולציה': '70.0%', 'אחוז_צ\'אטבוט': '71.8%'}
-    ]
-    df_funnel = pd.DataFrame(funnel_data)
-    df_funnel.to_csv(os.path.join(OUTPUT_DIR, 'tab_2c_funnel.csv'), index=False, encoding='utf-8-sig')
 
     # מאפייני רקע דמוגרפיים (N=49)
     df_surv = df[df['מילאה_שאלון'] == 1].copy()
@@ -1541,7 +1499,7 @@ def main():
         {'השוואה': 'כלל המדגם: מילאו מול לא מילאו שאלון', 'מדד': 'שיעור דיוק מקורות', 'n_מילאו': df_comp_surv['שיעור_דיוק_סיווג_מקורות'].dropna().count(), 'n_לא_מילאו': df_comp_nosurv['שיעור_דיוק_סיווג_מקורות'].dropna().count(), 'U': u_acc_all, 'p': f"{p_acc_all:.3f}"},
         {'השוואה': 'בתוך סימולציה: מילאו מול לא מילאו', 'מדד': 'ציון 4 ממדים', 'n_מילאו': sum(sim_c['מילאה_שאלון']==1), 'n_לא_מילאו': sum(sim_c['מילאה_שאלון']==0), 'U': u_s4_sim, 'p': f"{p_s4_sim:.3f}"},
         {'השוואה': 'בתוך צ\'אטבוט: מילאו מול לא מילאו', 'מדד': 'ציון 4 ממדים', 'n_מילאו': sum(cb_c['מילאה_שאלון']==1), 'n_לא_מילאו': sum(cb_c['מילאה_שאלון']==0), 'U': u_s4_cb, 'p': f"{p_s4_cb:.3f}"},
-        {'השוואה': 'תלות בין קבוצה למילוי שאלון (2x2)', 'מדד': 'Chi-Square', 'n_מילאו': 48, 'n_לא_מילאו': 21, 'U': f"Chi2 = {chi2_sc:.3f}", 'p': f"{p_sc:.3f}"}
+        {'השוואה': 'תלות בין קבוצה למילוי שאלון (2x2)', 'מדד': 'Chi-Square', 'n_מילאו': len(df_comp_surv), 'n_לא_מילאו': len(df_comp_nosurv), 'U': f"Chi2 = {chi2_sc:.3f}", 'p': f"{p_sc:.3f}"}
     ]
     df_attr = pd.DataFrame(attrition_rows)
     df_attr.to_csv(os.path.join(OUTPUT_DIR, 'tab_2f_attrition.csv'), index=False, encoding='utf-8-sig')
@@ -2397,7 +2355,7 @@ if __name__ == '__main__':
 # analysis_scripts/05_layer3_perception.py
 # רובד 3: תפיסה (Perception) - סולמות TAM (PU, PEOU, BI), CriTT, שביעות רצון ושאלות פתוחות
 # מדד TAM כולל אינו מחושב; הסולמות מדווחים בנפרד.
-# מדגם השאלון: N=49 (סימולציה n=21, צ'אטבוט n=28 - כולל נבדקת 70 user_525vg81ny)
+# מדגם השאלון כולל את המשיבה לשאלון שאין לה רשומת משימה
 # פרויקט מחקר WorkAI
 # ==============================================================================
 
@@ -2954,7 +2912,7 @@ def main():
     rows_6c = []
     pvals_6c = []
 
-    # תת-קבוצה של כל מי שמילאו שאלון (N=49, כולל נבדקת 70)
+    # תת-קבוצה של כל מי שמילאו שאלון (N=49, כולל המשיבה ללא רשומת משימה)
     df_l3_l1 = df[df['מילאה_שאלון'] == 1].copy()
     sim_l3_l1 = df_l3_l1[df_l3_l1['קבוצה_אנגלית'] == 'Simulation']
     cb_l3_l1  = df_l3_l1[df_l3_l1['קבוצה_אנגלית'] == 'Chatbot']
@@ -3707,7 +3665,7 @@ def main():
     })
 
     # ==============================================================================
-    # ניתוח G: ENA עם המשתתפת החריגה (user_isvijah1u)
+    # ניתוח G: ENA עם המשתתפת עם נפח ההודעות החריג
     # הערה: בסיס = ללא ijah1u (מודל ENA מדווח, N=68, Sim=29, CB=39)
     # רגישות = כולל ijah1u (מדגם מלא כבטבלה המרכזת, N=69, Sim=30, CB=39)
     # ==============================================================================
@@ -3745,10 +3703,10 @@ def main():
     })
 
     # ==============================================================================
-    # ניתוח H: שאלון ללא נבדקת 70 (N=48 מול N=49)
+    # ניתוח H: שאלון ללא המשיבה ללא רשומת משימה (N=48 מול N=49)
     # ==============================================================================
     surv_49 = df[df['מילאה_שאלון'] == 1].copy()
-    surv_48 = surv_49[surv_49['מזהה_משתמש'] != 'user_525vg81ny'].copy()
+    surv_48 = surv_49[surv_49['מזהה_משתמש'] != Q_ONLY_ID].copy()
 
     res_base_pu = mw_compare(surv_49[surv_49['קבוצה_אנגלית']=='Simulation']['PU'],
                              surv_49[surv_49['קבוצה_אנגלית']=='Chatbot']['PU'])
@@ -3758,7 +3716,7 @@ def main():
         'מזהה ניתוח': 'ניתוח H',
         'נושא הבדיקה': 'שימושיות נתפסת (PU)',
         'גרסת הניתוח': '1. בסיס (ראשי)',
-        'הגדרת הניתוח': 'מדגם שאלון מלא כולל נבדקת 70 (N=49)',
+        'הגדרת הניתוח': 'מדגם שאלון מלא כולל המשיבה ללא רשומת משימה (N=49)',
         'N סימולציה': res_base_pu['n_s'],
         'סימולציה ממוצע (סטיית תקן)': f"{res_base_pu['m_s']:.2f} ({res_base_pu['sd_s']:.2f})",
         'N צ׳אטבוט': res_base_pu['n_c'],
@@ -3773,7 +3731,7 @@ def main():
         'מזהה ניתוח': 'ניתוח H',
         'נושא הבדיקה': 'שימושיות נתפסת (PU)',
         'גרסת הניתוח': '2. רגישות (חלופי)',
-        'הגדרת הניתוח': 'מדגם שאלון ללא נבדקת 70 (N=48)',
+        'הגדרת הניתוח': 'מדגם שאלון ללא המשיבה ללא רשומת משימה (N=48)',
         'N סימולציה': res_sens_pu['n_s'],
         'סימולציה ממוצע (סטיית תקן)': f"{res_sens_pu['m_s']:.2f} ({res_sens_pu['sd_s']:.2f})",
         'N צ׳אטבוט': res_sens_pu['n_c'],
@@ -3782,7 +3740,7 @@ def main():
         'ערך p': f"{res_sens_pu['p']:.4f}",
         'גודל אפקט r_rb': f"{res_sens_pu['r_rb']:.3f}",
         'המסקנה השתנתה?': 'לא',
-        'הסבר ומסקנה': f"הממצא נותר מובהק (p = {res_sens_pu['p']:.4f}, r_rb = {res_sens_pu['r_rb']:.3f}), כלומר הכללת נבדקת 70 לא משנה את המסקנה"
+        'הסבר ומסקנה': f"הממצא נותר מובהק (p = {res_sens_pu['p']:.4f}, r_rb = {res_sens_pu['r_rb']:.3f}), כלומר הכללת המשיבה ללא רשומת משימה לא משנה את המסקנה"
     })
 
     tab_7 = pd.DataFrame(sens_rows)
@@ -3802,9 +3760,9 @@ if __name__ == '__main__':
 """
 09_attrition_funnel_analysis.py
 ================================================================================
-Comprehensive Attrition, Bounce Rate, and Selection Bias Analysis (WorkAI, N=182)
+Comprehensive Attrition, Bounce Rate, and Selection Bias Analysis (WorkAI)
 Updated and refined based on academic advisory review:
-- Reconciles cohort definitions to exactly match Step 0 / Funnel Table (40 vs 48 in Sim; 21 vs 73 in CB).
+- Cohorts (stage reached by each participant) are derived from the platform logs.
 - Adds Immediate Bounce Rate Analysis (<=30s, <=60s, <=120s) comparing both conditions.
 - Reports descriptive facts for Teach Me without tautological significance testing.
 - Reports small sample limitations (e.g. N=1 on quiz, N=2 on dropout classification).
@@ -3868,10 +3826,10 @@ def main():
     comp_users = set(sess[sess['completed_at'].notna()]['user_id'])
 
     # ==============================================================================
-    # 0. RECONCILIATION & COHORT DEFINITION (Consistent N=182)
+    # 0. COHORT DEFINITION (from the logs)
     # ==============================================================================
     # ==============================================================================
-    # 0. RECONCILIATION & COHORT DEFINITION (Consistent N=182)
+    # 0. COHORT DEFINITION (from the logs)
     # ==============================================================================
     # Combine all activity timestamps across all tables (usage_log, chat_message, prompt_performance_log, source_verification_log)
     all_ts = pd.concat([
@@ -3909,8 +3867,7 @@ def main():
             t_last = pd.to_datetime(u_logs['timestamp'].iloc[-1]) if len(u_logs) > 0 else None
         
         if cond == 'simulation':
-            # Exactly 48 users started practice: 30 completed + 17 practice dropouts + 1 user who reached the mail/practice screen
-            # This leaves exactly 40 users who dropped out in Teach Me
+            # Started practice: any practice action, prompt or chat message, completion, or reaching the mail/practice screen
             reached_mail_practice = ('read_mail' in acts and 'switch_view' in acts and not any('video' in a for a in acts) and not any('skip' in a for a in acts))
             started_practice = any(a in practice_core_acts for a in acts) or has_prompt or has_chat or is_comp or reached_mail_practice
             if is_comp:
@@ -3920,7 +3877,7 @@ def main():
             else:
                 stage = '1. נשר ב-Teach Me'
         else:
-            # Chatbot: 73 canonical practice starters (39 completed + 34 practice dropouts), leaving 21 pre-task dropouts
+            # Chatbot: started practice = entered the bot with further activity, or any prompt, chat message or submission
             has_interacted = has_prompt or has_chat or ('submit_selection' in acts) or is_comp
             started_practice = ('enter_bot' in acts and len(acts) > 2) or has_interacted
             if is_comp:
@@ -3942,30 +3899,51 @@ def main():
         })
         
     df_u = pd.DataFrame(user_records)
-    print("\n--- STEP 0: COHORT DISTRIBUTION (N=182) ---")
+    print("\n--- STEP 0: COHORT DISTRIBUTION ---")
     print(df_u.groupby(['condition', 'stage']).size())
 
     # ==============================================================================
     # 1. FUNNEL TRANSITIONS (3 Chi-Square tests with Cramer's V and Fisher)
     # ==============================================================================
     print("\n--- STEP 1: FUNNEL TRANSITION TESTS ---")
+    def _counts(cond):
+        d = df_u[df_u['condition'] == cond]
+        entered = len(d)
+        started = int(d['stage'].isin(['3. נשר בתרגול', '4. סיים (מסך סיכום)']).sum())
+        completed = int((d['stage'] == '4. סיים (מסך סיכום)').sum())
+        return entered, started, completed
+    se, ss, sc = _counts('simulation')
+    ce, cs, cc = _counts('chatbot')
     transitions = [
-        {
-            'transition': '1. כניסה אל התחלת תרגול',
-            'sim_success': 48, 'sim_fail': 40, 'sim_pct': 48/88*100,
-            'cb_success': 73, 'cb_fail': 21, 'cb_pct': 73/94*100
-        },
-        {
-            'transition': '2. התחלת תרגול אל סיום',
-            'sim_success': 30, 'sim_fail': 18, 'sim_pct': 30/48*100,
-            'cb_success': 39, 'cb_fail': 34, 'cb_pct': 39/73*100
-        },
-        {
-            'transition': '3. כניסה אל סיום (סך הכול)',
-            'sim_success': 30, 'sim_fail': 58, 'sim_pct': 30/88*100,
-            'cb_success': 39, 'cb_fail': 55, 'cb_pct': 39/94*100
-        }
+        {'transition': '1. כניסה אל התחלת תרגול',
+         'sim_success': ss, 'sim_fail': se - ss, 'sim_pct': ss / se * 100,
+         'cb_success': cs, 'cb_fail': ce - cs, 'cb_pct': cs / ce * 100},
+        {'transition': '2. התחלת תרגול אל סיום',
+         'sim_success': sc, 'sim_fail': ss - sc, 'sim_pct': sc / ss * 100,
+         'cb_success': cc, 'cb_fail': cs - cc, 'cb_pct': cc / cs * 100},
+        {'transition': '3. כניסה אל סיום (סך הכול)',
+         'sim_success': sc, 'sim_fail': se - sc, 'sim_pct': sc / se * 100,
+         'cb_success': cc, 'cb_fail': ce - cc, 'cb_pct': cc / ce * 100},
     ]
+
+    # Participation funnel (Table B1), from the logs and the master table
+    _m = pd.read_csv(os.path.join(SCRIPTS_DIR, 'master_clean_n70.csv'))
+    _q = _m[_m['מילאה_שאלון'] == 1]['קבוצה_אנגלית'].value_counts()
+    qs, qc = int(_q.get('Simulation', 0)), int(_q.get('Chatbot', 0))
+    funnel = [
+        ('1. כניסה והרשמה למערכת (Registered)', se, ce),
+        ('2. התחלת תרגול ומשימה בפועל (Started Practice)', ss, cs),
+        ('3. השלמת משימה מלאה והגשת דוח (Completed Task)', sc, cc),
+        ('4. מילוי שאלון משוב (Completed Survey)', qs, qc),
+    ]
+    prev = None
+    rows_f = []
+    for name, a_, b_ in funnel:
+        rows_f.append({'שלב': name, 'סימולציה_n': a_, "צ'אטבוט_n": b_, 'סה"כ_n': a_ + b_,
+                       'אחוז_סימולציה': f"{(a_ / prev[0] * 100 if prev else 100):.1f}%",
+                       "אחוז_צ'אטבוט": f"{(b_ / prev[1] * 100 if prev else 100):.1f}%"})
+        prev = (a_, b_)
+    pd.DataFrame(rows_f).to_csv(os.path.join(SCRIPTS_DIR, 'tab_2c_funnel.csv'), index=False, encoding='utf-8-sig')
 
     t1_rows = []
     for tr in transitions:
@@ -4020,8 +3998,8 @@ def main():
         
         bounce_rows.append({
             'הגדרת עזיבה מיידית': f'עזבו תוך {sec_thresh} שניות מהכניסה',
-            'סימולציה N (%)': f"{sim_n}/88 ({sim_pct:.1f}%)",
-            'צ\'אטבוט N (%)': f"{cb_n}/94 ({cb_pct:.1f}%)",
+            'סימולציה N (%)': f"{sim_n}/{se} ({sim_pct:.1f}%)",
+            'צ\'אטבוט N (%)': f"{cb_n}/{ce} ({cb_pct:.1f}%)",
             'Chi_Square': round(chi2, 3),
             'ערך_p': round(p, 4),
             'Cramer_V': round(v, 3),
@@ -4037,9 +4015,9 @@ def main():
     print(df_bounce[['הגדרת עזיבה מיידית', 'סימולציה N (%)', 'צ\'אטבוט N (%)', 'Chi_Square', 'ערך_p', 'Cramer_V', 'Odds_Ratio', 'Odds_Ratio_95%_CI_Woolf', 'מובהקות']])
 
     # ==============================================================================
-    # 3. TEACH ME EXIT POINTS (40 Simulation Dropouts - Descriptive)
+    # 3. TEACH ME EXIT POINTS (Simulation dropouts before practice, descriptive)
     # ==============================================================================
-    print("\n--- STEP 2: TEACH ME EXIT POINTS (N=40) ---")
+    print("\n--- STEP 2: TEACH ME EXIT POINTS ---")
     sim_dropouts_tm = df_u[(df_u['condition']=='simulation') & (df_u['stage']=='1. נשר ב-Teach Me')]['user_id'].tolist()
     
     exit_records = []
@@ -4092,7 +4070,7 @@ def main():
         סטיית_תקן_זמן_שניות=('משך_זמן_עד_עזיבה_שניות', 'std'),
         ממוצע_שאלות_שנענו=('שאלות_בוחן_שנענו', 'mean')
     ).reset_index()
-    df_exit_summary['אחוז_מתוך_40_הנושרים'] = (df_exit_summary['N_נושרים'] / 40 * 100).apply(lambda x: f"{x:.1f}%")
+    df_exit_summary['אחוז_מתוך_הנושרים'] = (df_exit_summary['N_נושרים'] / df_exit_summary['N_נושרים'].sum() * 100).apply(lambda x: f"{x:.1f}%")
     
     df_exit_summary.to_csv(os.path.join(BASE_DIR, 'tab_attrition_2_teachme_exit_points.csv'), index=False, encoding='utf-8-sig')
     print(df_exit_summary)
@@ -4107,7 +4085,7 @@ def main():
         cond = u_row['condition']
         stage = u_row['stage']
         
-        # Only users who entered practice (Sim N=48, CB N=73)
+        # Only users who entered practice
         if stage in ['1. נשר ב-Teach Me', '2. נשר לפני תרגול']:
             continue
             
@@ -4226,7 +4204,7 @@ def main():
     # ==============================================================================
     # 5. ENTRY DATE CLUSTERING (Clean, unspeculative calendar reporting)
     # ==============================================================================
-    print("\n--- STEP 5: CALENDAR TIMING (ALL 182 PARTICIPANTS) ---")
+    print("\n--- STEP 5: CALENDAR TIMING (ALL PARTICIPANTS) ---")
     first_ts = u_sess.groupby('user_id').first().reset_index()
     first_ts['dt'] = pd.to_datetime(first_ts['timestamp'])
     first_ts['date_str'] = first_ts['dt'].dt.strftime('%Y-%m-%d')
@@ -4356,7 +4334,7 @@ from statsmodels.stats.multitest import multipletests as _mt
 def transition_comparison():
     d = pd.read_csv(os.path.join(PROJECT_DIR, 'ena_ona_dataset_coded_english.csv'))
     d['user_id'] = d.user_id.astype(str).str.replace('"', '').str.strip()
-    d = d[d.user_id != 'user_isvijah1u']
+    d = d[d.user_id != ANOMALOUS_ID]
     P = ['Prompt_ClearTask', 'Prompt_SourceRequest', 'Prompt_Quality', 'Prompt_Recency', 'Prompt_GlobalScope', 'task_prompt', 'refine_request_sources']
     B = ['request_learning', 'consult_source', 'interface_difficulty', 'verify_sources_request', 'prompt_drafting_help', 'explain_chat_operation', 'general_consultation', 'off_task']
     ST = ['P', 'B', 'V', 'S', 'C']; idx = {s: i for i, s in enumerate(ST)}
@@ -4962,8 +4940,8 @@ cat("STEP 5: TABLE E10 SENSITIVITY ANALYSIS (ENA DIMENSION 1)\n")
 cat("===============================================================================\n")
 
 # Base (N = 69: Sim = 30, CB = 39)
-# Without anomalous user user_isvijah1u (N = 68: Sim = 29, CB = 39)
-pts_no_outlier <- pts[pts$UserName != "user_isvijah1u", ]
+# Without the participant with anomalous message volume
+pts_no_outlier <- pts[pts$UserName != "{{ANOMALOUS_ID}}", ]
 
 mwu_base <- calc_mwu(pts$MR1[pts$Condition == "simulation"], pts$MR1[pts$Condition == "chatbot"])
 mwu_clean <- calc_mwu(pts_no_outlier$MR1[pts_no_outlier$Condition == "simulation"],
@@ -4972,7 +4950,7 @@ mwu_clean <- calc_mwu(pts_no_outlier$MR1[pts_no_outlier$Condition == "simulation
 t_e10_df <- data.frame(
   Analysis = c("G", "G"),
   Measure = c("ENA Dimension 1", "ENA Dimension 1"),
-  Version = c("Base", "Without the participant with anomalous message volume (user_isvijah1u)"),
+  Version = c("Base", "Without the participant with anomalous message volume"),
   n_simulation = c(30, 29),
   n_chatbot = c(39, 39),
   MannWhitney_W = c(mwu_base$W, mwu_clean$W),
@@ -5514,7 +5492,7 @@ system2("python3", c("-c", shQuote(py_fig3_code)))
 
 # --- FIGURE 6: Comparative Composite Score and Dimensions (Single-panel: NO text above plot) ---
 cat("Generating Figure 6 Composite Score & Dimensions...\n")
-df_task <- df_master[df_master$מזהה_משתמש != "user_525vg81ny", ]
+df_task <- df_master[df_master$מזהה_משתמש != "{{Q_ONLY_ID}}", ]
 df <- df_master
 fig6_measures <- c(
   "ציון_4_ממדים" = "Comparative\ncomposite score",
@@ -5729,7 +5707,7 @@ ggsave("figure_e1_sig.pdf", p_e1, width = 9.5, height = 6.0, device = cairo_pdf)
 def run_r(code):
     import subprocess, tempfile
     with tempfile.NamedTemporaryFile('w', suffix='.R', delete=False, encoding='utf-8') as fh:
-        fh.write(code)
+        fh.write(code.replace('{{ANOMALOUS_ID}}', ANOMALOUS_ID).replace('{{Q_ONLY_ID}}', Q_ONLY_ID))
         path = fh.name
     try:
         subprocess.run(['Rscript', '--encoding=UTF-8', path], cwd=PROJECT_DIR, check=True)
