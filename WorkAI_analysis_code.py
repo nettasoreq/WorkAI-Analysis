@@ -19,7 +19,7 @@ This single file contains the full analysis pipeline, in the order in which it i
   Part 4  Cleaning, outliers, normality, scale reliability, sample characteristics
            Thesis: Sections 5.3 to 5.4; Tables B3, B4, B8
   Part 5  Process layer: activity and verification measures
-           Thesis: Section 6.1; Tables E12, E13, E15
+           Thesis: Section 6.1 (exploratory tables; Tables E12, E13, E15 are produced in Part 16)
   Part 6  Performance layer: composite score, dimensions, SDT, reflection
            Thesis: Section 6.2; Figure 6; Tables E4, E5, E16; Figure E1
   Part 7  Perception layer: questionnaire scales, items, open-ended questions
@@ -39,7 +39,7 @@ This single file contains the full analysis pipeline, in the order in which it i
   Part 15 Comparison of the transition structure between the conditions
            Thesis: Section 6.1 (G-squared), Table E14, Figure E4
   Part 16 Regression models and checks
-           Thesis: Table E9, Table E8 (full-sample rows), Table E10 (row I)
+           Thesis: Tables E9, E12, E13, E15, E16; Table E8 (full-sample rows); Table E10 (row I)
   Part 17 R pipeline: ENA, ONA, permutation tests, Table E8, network figures
            Thesis: Figures 4, 5, E2; Tables E1, E2, E8, E10 (row G)
   Part 18 R figures: Figure E3 with Table E9 (Model 3), Figure E1
@@ -4489,6 +4489,71 @@ def regressions_and_checks():
 
 
 regressions_and_checks()
+
+
+
+def process_measures_and_score_families():
+    """Tables E12, E13, E15 (process measures) and Table E16 (score dimensions).
+
+    Process measures: Mann-Whitney U tests with Benjamini-Hochberg FDR across the 11
+    measures that are comparable between conditions. Total actions and actions per minute
+    are reported descriptively, because the logs recorded different events in each version.
+    Messages to the AI are counted from the platform database (user messages in the session).
+    """
+    m = pd.read_csv(os.path.join(SCRIPTS_DIR, 'master_clean_n70.csv'))
+    c = m[m['השלימה_משימה'] == 1].copy()
+    db = sqlite3.connect(os.path.join(PROJECT_DIR, 'Db_278.db'))
+    msgs = pd.read_sql("select session_id, count(*) n from chat_message where role='user' group by session_id", db)
+    c['messages_to_ai'] = c['מזהה_סשן_נבחר'].map(msgs.set_index('session_id').n).fillna(0)
+    src = c[c['סהכ_מקורות_שהוצגו'].notna()]   # participants who were presented with sources
+
+    def test(df, col):
+        a = df[df['קבוצה_אנגלית'] == 'Simulation'][col].dropna()
+        b = df[df['קבוצה_אנגלית'] == 'Chatbot'][col].dropna()
+        u, p = _mwu(a, b, alternative='two-sided')
+        return dict(n_sim=len(a), M_sim=a.mean(), SD_sim=a.std(), n_cb=len(b), M_cb=b.mean(), SD_cb=b.std(),
+                    U=u, p=p, r=2 * u / (len(a) * len(b)) - 1)
+
+    comparable = [
+        ('Net activity duration (minutes)', c, 'משך_פעילות_נטו_מנוקה_דקות'),
+        ('Messages to the AI', c, 'messages_to_ai'),
+        ('Task prompt attempts', c, 'ניסיונות_פרומפט_משימה_מסווגים'),
+        ('Sources presented', src, 'סהכ_מקורות_שהוצגו'),
+        ('Source visits', src, 'מקורות_שנבדקו_באתר'),
+        ('Google searches', src, 'חיפושים_חיצוניים_בגוגל'),
+        ('Cross-verifications between Google and source website', src, 'הצלבות_גוגל_ואתר'),
+        ('Sources classified without verification', src, 'מקורות_שנוחשו_ללא_בדיקה'),
+        ('Source visit rate', src, 'שיעור_ביקור_במקורות'),
+        ('Google search rate', src, 'שיעור_חיפוש_בגוגל'),
+        ('Classification without verification rate', src, 'שיעור_ניחוש_ללא_בדיקה'),
+    ]
+    rows = [dict(measure=name, **test(df, col)) for name, df, col in comparable]
+    t = pd.DataFrame(rows)
+    t['p_fdr'] = _mt(t.p, method='fdr_bh')[1]
+    descriptive = [dict(measure=name, **test(c, col)) for name, col in
+                   [('Total actions in the system (descriptive)', 'סהכ_פעולות_במערכת'),
+                    ('Actions per minute (descriptive)', 'קצב_פעולות_לדקה_APM')]]
+    t = pd.concat([t, pd.DataFrame(descriptive)], ignore_index=True)
+    t.to_csv(os.path.join(SCRIPTS_DIR, 'tab_E12_E13_E15_process_measures.csv'), index=False)
+    print(t.round(3).to_string())
+    print('Significant after FDR (k = 11):', int((t.p_fdr < 0.05).sum()), 'of 11')
+
+    # Table E16: FDR across the four common dimensions and the classification accuracy rate (k = 5)
+    acc = pd.read_csv(os.path.join(SCRIPTS_DIR, 'tab_classification_accuracy_by_participant.csv'))
+    dims = [('Prompt quality', 'ציון_ממד_פרומפט'), ('Link verification accuracy', 'ציון_ממד_זיהוי_מקורות'),
+            ('Process execution', 'ציון_ממד_תהליך_ובדיקה'), ('Reflection', 'ציון_ממד_תחקיר')]
+    rows = [dict(measure=name, **test(c, col)) for name, col in dims]
+    a = acc[acc.group == 'Simulation'].accuracy; b = acc[acc.group == 'Chatbot'].accuracy
+    u, p = _mwu(a, b, alternative='two-sided')
+    rows.append(dict(measure='Classification accuracy rate', n_sim=len(a), M_sim=a.mean(), SD_sim=a.std(), n_cb=len(b),
+                     M_cb=b.mean(), SD_cb=b.std(), U=u, p=p, r=2 * u / (len(a) * len(b)) - 1))
+    e16 = pd.DataFrame(rows)
+    e16['p_fdr'] = _mt(e16.p, method='fdr_bh')[1]
+    e16.to_csv(os.path.join(SCRIPTS_DIR, 'tab_E16_score_dimensions.csv'), index=False)
+    print(e16.round(3).to_string())
+
+
+process_measures_and_score_families()
 
 
 #==============================================================================
